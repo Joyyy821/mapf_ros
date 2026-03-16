@@ -140,7 +140,10 @@ public:
         // (optional) check that this constraint was not included already
         // std::cout << newNode.constraints[i] << std::endl;
         // std::cout << c.second << std::endl;
-        assert(!newNode.constraints[i].overlap(c.second));
+        if (newNode.constraints[i].overlap(c.second)) {
+          ++id;
+          continue;
+        }
 
         newNode.constraints[i].add(c.second);
 

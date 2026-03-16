@@ -173,6 +173,9 @@ void MAPFBase::getParam() {
   this->declare_parameter<double>("goal_tolerance", 1.0);
   this->get_parameter("goal_tolerance", goal_tolerance_);
 
+  this->declare_parameter<bool>("continuous_planning", true);
+  this->get_parameter("continuous_planning", continuous_planning_);
+
   this->declare_parameter<std::string>("global_frame_id", "map");
   this->get_parameter("global_frame_id", global_frame_id_);
 
@@ -278,10 +281,20 @@ void MAPFBase::doMAPFThread() {
       lock_planner.unlock();
       if (run_mapf) {
         nav_msgs::msg::Path start_ros = getRobotPose();
+        nav_msgs::msg::Path goal_snapshot;
+        {
+          std::lock_guard<std::mutex> lock_goal(mtx_mapf_goal_);
+          goal_snapshot = goal_ros_;
+        }
         double cost = 0;
         mapf_msgs::msg::GlobalPlan plan;
-        if (mapf_planner_->makePlan(start_ros, goal_ros_, plan, cost, planner_time_tolerance_)) {
+        if (mapf_planner_->makePlan(
+                start_ros, goal_snapshot, plan, cost, planner_time_tolerance_)) {
           publishPlan(plan);
+          if (!continuous_planning_) {
+            std::unique_lock<std::mutex> lock_planner(mtx_planner_);
+            run_mapf_ = false;
+          }
         }
       }
       loop_rate.sleep();

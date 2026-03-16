@@ -125,7 +125,7 @@ private:
 public:
   PlanExecutor()
       : ParamServer("plan_executor_node"), make_span_(0), get_plan_(false),
-        ac_ptr_arr_(agent_num_, nullptr) {
+        pose_initalize_(false), ac_ptr_arr_(agent_num_, nullptr) {
 
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     tf_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
@@ -164,6 +164,7 @@ public:
       loop_rate.sleep();
 
       // get current pose
+      bool all_transforms_ready = true;
       for (int i = 0; i < agent_num_; ++i) {
         try {
           geometry_msgs::msg::PoseStamped robot_pose;
@@ -174,11 +175,12 @@ public:
 
           tf_buffer_->transform(robot_pose, cur_poses_[i], global_frame_id_);
         } catch (const tf2::TransformException &ex) {
+          all_transforms_ready = false;
           RCLCPP_ERROR(get_logger(), "Failed to transform pose for agent %d: %s", i, ex.what());
         }
       }
 
-      if (!pose_initalize_) {
+      if (!pose_initalize_ && all_transforms_ready) {
         RCLCPP_INFO(this->get_logger(), GREEN "INITIALIZE POSE DONE." NONE);
         pose_initalize_ = true;
       }
@@ -342,7 +344,7 @@ public:
   nav2_msgs::action::NavigateToPose::Goal
   getMBGoalFromGeoPose(const geometry_msgs::msg::PoseStamped &curr_location) {
     nav2_msgs::action::NavigateToPose::Goal tmp_goal;
-    tmp_goal.pose.header.frame_id = "map";
+    tmp_goal.pose.header.frame_id = global_frame_id_;
     tmp_goal.pose.header.stamp = this->get_clock()->now();
     tmp_goal.pose.pose = curr_location.pose;
     return tmp_goal;

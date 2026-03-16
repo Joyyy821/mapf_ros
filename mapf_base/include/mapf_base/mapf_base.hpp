@@ -87,6 +87,7 @@ protected:
   std::string global_frame_id_;
   double planner_time_tolerance_;
   double goal_tolerance_;
+  bool continuous_planning_;
   std::vector<std::string> base_frame_id_;
   std::vector<std::string> plan_topic_;
 
