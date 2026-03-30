@@ -63,6 +63,24 @@ void CBSROS::initialize(
 
     costmap_ = costmap_ros->getCostmap();
     global_frame_ = costmap_ros->getGlobalFrameID();
+    node_->declare_parameter("min_agent_center_distance_m", 0.0);
+    node_->get_parameter("min_agent_center_distance_m",
+                         min_agent_center_distance_m_);
+    int obstacle_cost_threshold_param = 1;
+    node_->declare_parameter("static_obstacle_cost_threshold", 1);
+    node_->get_parameter("static_obstacle_cost_threshold",
+                         obstacle_cost_threshold_param);
+    if (obstacle_cost_threshold_param < 0) {
+      obstacle_cost_threshold_param = 0;
+    }
+    if (obstacle_cost_threshold_param > 255) {
+      obstacle_cost_threshold_param = 255;
+    }
+    obstacle_cost_threshold_ =
+        static_cast<unsigned int>(obstacle_cost_threshold_param);
+    RCLCPP_INFO(logger_,
+                "Using static obstacle cost threshold >= %u for planner obstacles.",
+                obstacle_cost_threshold_);
 
     update_obstacle_thread_ =
         new boost::thread(boost::bind(&CBSROS::updateObstacleThread, this));
@@ -91,7 +109,7 @@ void CBSROS::updateObstacleThread() {
           for (int i = 0; i < dimy; ++i) {
             for (int j = 0; j < dimx; ++j) {
               if (costarr[offset] >=
-                  nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+                  obstacle_cost_threshold_) {
                 obstacles_.insert(Location(j, i));
                 num_obs++;
               }
@@ -195,7 +213,11 @@ bool CBSROS::makePlan(const nav_msgs::msg::Path &start,
   int dimx = costmap_->getSizeInCellsX(), dimy = costmap_->getSizeInCellsY();
 
   std::vector<PlanResult<State, Action, int>> solution;
-  Environment mapf(dimx, dimy, obstacles_, goals, false);
+  const double minAgentCenterDistanceCells =
+      min_agent_center_distance_m_ /
+      std::max(costmap_->getResolution(), 1e-6);
+  Environment mapf(dimx, dimy, obstacles_, goals, false,
+                   minAgentCenterDistanceCells);
   CBS<State, Action, int, Conflict, Constraints, Environment> cbs(mapf);
 
   Timer timer;
@@ -297,7 +319,7 @@ void CBSROS::clearCell(const unsigned int &mx, const unsigned int &my) {
 
 bool CBSROS::checkIsObstacle(const unsigned int &mx, const unsigned int &my) {
   return (costmap_->getCost(mx, my) >=
-          nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
+          obstacle_cost_threshold_);
 }
 
 bool CBSROS::checkSurroundObstacle(const unsigned int &mx,

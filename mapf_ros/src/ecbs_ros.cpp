@@ -66,6 +66,21 @@ void ECBSROS::initialize(
 
     costmap_ = costmap_ros->getCostmap();
     global_frame_ = costmap_ros->getGlobalFrameID();
+    int obstacle_cost_threshold_param = 1;
+    node_->declare_parameter("static_obstacle_cost_threshold", 1);
+    node_->get_parameter("static_obstacle_cost_threshold",
+                         obstacle_cost_threshold_param);
+    if (obstacle_cost_threshold_param < 0) {
+      obstacle_cost_threshold_param = 0;
+    }
+    if (obstacle_cost_threshold_param > 255) {
+      obstacle_cost_threshold_param = 255;
+    }
+    obstacle_cost_threshold_ =
+        static_cast<unsigned int>(obstacle_cost_threshold_param);
+    RCLCPP_INFO(logger_,
+                "Using static obstacle cost threshold >= %u for planner obstacles.",
+                obstacle_cost_threshold_);
 
     update_obstacle_thread_ =
         new boost::thread(boost::bind(&ECBSROS::updateObstacleThread, this));
@@ -94,7 +109,7 @@ void ECBSROS::updateObstacleThread() {
           for (int i = 0; i < dimy; ++i) {
             for (int j = 0; j < dimx; ++j) {
               if (costarr[offset] >=
-                  nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE) {
+                  obstacle_cost_threshold_) {
                 obstacles_.insert(Location(j, i));
                 num_obs++;
               }
@@ -293,7 +308,7 @@ void ECBSROS::clearCell(const unsigned int &mx, const unsigned int &my) {
 
 bool ECBSROS::checkIsObstacle(const unsigned int &mx, const unsigned int &my) {
   return (costmap_->getCost(mx, my) >=
-          nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE);
+          obstacle_cost_threshold_);
 }
 
 bool ECBSROS::checkSurroundObstacle(const unsigned int &mx,

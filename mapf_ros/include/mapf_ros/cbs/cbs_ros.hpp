@@ -90,6 +90,8 @@ protected:
 
   // mapf env
   std::unordered_set<Location> obstacles_;
+  double min_agent_center_distance_m_{0.0};
+  unsigned int obstacle_cost_threshold_{1};
 
   bool initialized_;
 

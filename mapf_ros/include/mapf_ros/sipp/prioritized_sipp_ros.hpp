@@ -90,6 +90,7 @@ protected:
 
   // mapf env
   std::unordered_set<State> obstacles_;
+  unsigned int obstacle_cost_threshold_{1};
 
   bool initialized_;
 
