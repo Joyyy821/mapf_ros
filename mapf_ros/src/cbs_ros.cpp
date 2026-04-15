@@ -78,9 +78,14 @@ void CBSROS::initialize(
     }
     obstacle_cost_threshold_ =
         static_cast<unsigned int>(obstacle_cost_threshold_param);
+    const double resolution = std::max(costmap_->getResolution(), 1e-6);
     RCLCPP_INFO(logger_,
                 "Using static obstacle cost threshold >= %u for planner obstacles.",
                 obstacle_cost_threshold_);
+    RCLCPP_INFO(logger_,
+                "Using inter-agent clearance %.3f m (%.2f cells at %.3f m/cell).",
+                min_agent_center_distance_m_,
+                min_agent_center_distance_m_ / resolution, resolution);
 
     update_obstacle_thread_ =
         new boost::thread(boost::bind(&CBSROS::updateObstacleThread, this));

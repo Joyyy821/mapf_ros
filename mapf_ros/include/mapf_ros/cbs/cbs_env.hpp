@@ -272,9 +272,20 @@ public:
     m_agentIdx = agentIdx;
     m_constraints = constraints;
     m_lastGoalConstraint = -1;
+    const auto &goal = m_goals[m_agentIdx];
     for (const auto &vc : constraints->vertexConstraints) {
-      if (vc.x == m_goals[m_agentIdx].x && vc.y == m_goals[m_agentIdx].y) {
+      if (vc.x == goal.x && vc.y == goal.y) {
         m_lastGoalConstraint = std::max(m_lastGoalConstraint, vc.time);
+      }
+    }
+    for (const auto &ec : constraints->edgeConstraints) {
+      // If a future edge constraint touches the goal, the low-level search must
+      // continue past that timestep. This is especially important for agents
+      // that would otherwise stop early and remain parked at goal while another
+      // agent passes too close later.
+      if ((ec.x1 == goal.x && ec.y1 == goal.y) ||
+          (ec.x2 == goal.x && ec.y2 == goal.y)) {
+        m_lastGoalConstraint = std::max(m_lastGoalConstraint, ec.time);
       }
     }
   }

@@ -3,6 +3,10 @@
 #ifndef ECBS_ENV_H
 #define ECBS_ENV_H
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+
 #include "../utils/utility.hpp"
 
 #include "../utils/neighbor.hpp"
@@ -84,19 +88,24 @@ struct Conflict {
   size_t agent1;
   size_t agent2;
   Type type;
+  State agent1_start;
+  State agent1_end;
+  State agent2_start;
+  State agent2_end;
 
-  int x1;
-  int y1;
-  int x2;
-  int y2;
+  Conflict()
+      : time(0), agent1(0), agent2(0), type(Vertex), agent1_start(0, 0, 0),
+        agent1_end(0, 0, 0), agent2_start(0, 0, 0), agent2_end(0, 0, 0) {}
 
   friend std::ostream &operator<<(std::ostream &os, const Conflict &c) {
     switch (c.type) {
     case Vertex:
-      return os << c.time << ": Vertex(" << c.x1 << "," << c.y1 << ")";
+      return os << c.time << ": Vertex(" << c.agent1_start.x << ","
+                << c.agent1_start.y << ")";
     case Edge:
-      return os << c.time << ": Edge(" << c.x1 << "," << c.y1 << "," << c.x2
-                << "," << c.y2 << ")";
+      return os << c.time << ": Edge(" << c.agent1_start.x << ","
+                << c.agent1_start.y << "," << c.agent1_end.x << ","
+                << c.agent1_end.y << ")";
     }
     return os;
   }
@@ -241,11 +250,15 @@ template <> struct hash<Location> {
 class Environment {
 public:
   Environment(size_t dimx, size_t dimy, std::unordered_set<Location> obstacles,
-              std::vector<Location> goals, bool disappearAtGoal = false)
+              std::vector<Location> goals, bool disappearAtGoal = false,
+              double minAgentCenterDistance = 0.0)
       : m_dimx(dimx), m_dimy(dimy), m_obstacles(std::move(obstacles)),
         m_goals(std::move(goals)), m_agentIdx(0), m_constraints(nullptr),
         m_lastGoalConstraint(-1), m_highLevelExpanded(0), m_lowLevelExpanded(0),
-        m_disappearAtGoal(disappearAtGoal) {}
+        m_disappearAtGoal(disappearAtGoal),
+        m_minAgentCenterDistance(minAgentCenterDistance),
+        m_minAgentCenterDistanceSquared(minAgentCenterDistance *
+                                        minAgentCenterDistance) {}
 
   Environment(const Environment &) = delete;
   Environment &operator=(const Environment &) = delete;
@@ -255,9 +268,16 @@ public:
     m_agentIdx = agentIdx;
     m_constraints = constraints;
     m_lastGoalConstraint = -1;
+    const auto &goal = m_goals[m_agentIdx];
     for (const auto &vc : constraints->vertexConstraints) {
-      if (vc.x == m_goals[m_agentIdx].x && vc.y == m_goals[m_agentIdx].y) {
+      if (vc.x == goal.x && vc.y == goal.y) {
         m_lastGoalConstraint = std::max(m_lastGoalConstraint, vc.time);
+      }
+    }
+    for (const auto &ec : constraints->edgeConstraints) {
+      if ((ec.x1 == goal.x && ec.y1 == goal.y) ||
+          (ec.x2 == goal.x && ec.y2 == goal.y)) {
+        m_lastGoalConstraint = std::max(m_lastGoalConstraint, ec.time);
       }
     }
   }
@@ -275,7 +295,7 @@ public:
     for (size_t i = 0; i < solution.size(); ++i) {
       if (i != m_agentIdx && !solution[i].states.empty()) {
         State state2 = getState(i, solution, s.time);
-        if (s.equalExceptTime(state2)) {
+        if (statesWithinClearance(s, state2)) {
           ++numConflicts;
         }
       }
@@ -292,7 +312,7 @@ public:
       if (i != m_agentIdx && !solution[i].states.empty()) {
         State s2a = getState(i, solution, s1a.time);
         State s2b = getState(i, solution, s1b.time);
-        if (s1a.equalExceptTime(s2b) && s1b.equalExceptTime(s2a)) {
+        if (transitionsWithinClearance(s1a, s1b, s2a, s2b)) {
           ++numConflicts;
         }
       }
@@ -316,7 +336,7 @@ public:
         State state1 = getState(i, solution, t);
         for (size_t j = i + 1; j < solution.size(); ++j) {
           State state2 = getState(j, solution, t);
-          if (state1.equalExceptTime(state2)) {
+          if (statesWithinClearance(state1, state2)) {
             ++numConflicts;
           }
         }
@@ -328,8 +348,8 @@ public:
         for (size_t j = i + 1; j < solution.size(); ++j) {
           State state2a = getState(j, solution, t);
           State state2b = getState(j, solution, t + 1);
-          if (state1a.equalExceptTime(state2b) &&
-              state1b.equalExceptTime(state2a)) {
+          if (transitionsWithinClearance(state1a, state1b, state2a,
+                                         state2b)) {
             ++numConflicts;
           }
         }
@@ -401,15 +421,15 @@ public:
         State state1 = getState(i, solution, t);
         for (size_t j = i + 1; j < solution.size(); ++j) {
           State state2 = getState(j, solution, t);
-          if (state1.equalExceptTime(state2)) {
+          if (statesWithinClearance(state1, state2)) {
             result.time = t;
             result.agent1 = i;
             result.agent2 = j;
             result.type = Conflict::Vertex;
-            result.x1 = state1.x;
-            result.y1 = state1.y;
-            // std::cout << "VC " << t << "," << state1.x << "," << state1.y <<
-            // std::endl;
+            result.agent1_start = state1;
+            result.agent1_end = state1;
+            result.agent2_start = state2;
+            result.agent2_end = state2;
             return true;
           }
         }
@@ -421,16 +441,16 @@ public:
         for (size_t j = i + 1; j < solution.size(); ++j) {
           State state2a = getState(j, solution, t);
           State state2b = getState(j, solution, t + 1);
-          if (state1a.equalExceptTime(state2b) &&
-              state1b.equalExceptTime(state2a)) {
+          if (transitionsWithinClearance(state1a, state1b, state2a,
+                                         state2b)) {
             result.time = t;
             result.agent1 = i;
             result.agent2 = j;
             result.type = Conflict::Edge;
-            result.x1 = state1a.x;
-            result.y1 = state1a.y;
-            result.x2 = state1b.x;
-            result.y2 = state1b.y;
+            result.agent1_start = state1a;
+            result.agent1_end = state1b;
+            result.agent2_start = state2a;
+            result.agent2_end = state2b;
             return true;
           }
         }
@@ -445,18 +465,19 @@ public:
                                 std::map<size_t, Constraints> &constraints) {
     if (conflict.type == Conflict::Vertex) {
       Constraints c1;
-      c1.vertexConstraints.emplace(
-          VertexConstraint(conflict.time, conflict.x1, conflict.y1));
+      Constraints c2;
+      addVertexConstraintsAround(conflict.time, conflict.agent2_start, c1);
+      addVertexConstraintsAround(conflict.time, conflict.agent1_start, c2);
       constraints[conflict.agent1] = c1;
-      constraints[conflict.agent2] = c1;
+      constraints[conflict.agent2] = c2;
     } else if (conflict.type == Conflict::Edge) {
       Constraints c1;
-      c1.edgeConstraints.emplace(EdgeConstraint(
-          conflict.time, conflict.x1, conflict.y1, conflict.x2, conflict.y2));
-      constraints[conflict.agent1] = c1;
       Constraints c2;
-      c2.edgeConstraints.emplace(EdgeConstraint(
-          conflict.time, conflict.x2, conflict.y2, conflict.x1, conflict.y1));
+      addEdgeConstraintsAround(conflict.time, conflict.agent2_start,
+                               conflict.agent2_end, c1);
+      addEdgeConstraintsAround(conflict.time, conflict.agent1_start,
+                               conflict.agent1_end, c2);
+      constraints[conflict.agent1] = c1;
       constraints[conflict.agent2] = c2;
     }
   }
@@ -473,6 +494,117 @@ public:
   int lowLevelExpanded() const { return m_lowLevelExpanded; }
 
 private:
+  bool statesWithinClearance(const State &state1, const State &state2) const {
+    if (m_minAgentCenterDistance <= 0.0) {
+      return state1.equalExceptTime(state2);
+    }
+
+    const double dx = static_cast<double>(state1.x - state2.x);
+    const double dy = static_cast<double>(state1.y - state2.y);
+    return dx * dx + dy * dy <= m_minAgentCenterDistanceSquared;
+  }
+
+  bool transitionsWithinClearance(const State &state1a, const State &state1b,
+                                  const State &state2a,
+                                  const State &state2b) const {
+    if (m_minAgentCenterDistance <= 0.0) {
+      return state1a.equalExceptTime(state2b) &&
+             state1b.equalExceptTime(state2a);
+    }
+
+    return segmentDistanceSquared(
+               static_cast<double>(state1a.x), static_cast<double>(state1a.y),
+               static_cast<double>(state1b.x), static_cast<double>(state1b.y),
+               static_cast<double>(state2a.x), static_cast<double>(state2a.y),
+               static_cast<double>(state2b.x),
+               static_cast<double>(state2b.y)) <=
+           m_minAgentCenterDistanceSquared;
+  }
+
+  void addVertexConstraintsAround(int time, const State &otherState,
+                                  Constraints &constraints) const {
+    if (m_minAgentCenterDistance <= 0.0) {
+      constraints.vertexConstraints.emplace(
+          VertexConstraint(time, otherState.x, otherState.y));
+      return;
+    }
+
+    const int radius = static_cast<int>(std::ceil(m_minAgentCenterDistance));
+    for (int dx = -radius; dx <= radius; ++dx) {
+      for (int dy = -radius; dy <= radius; ++dy) {
+        const double distSquared = static_cast<double>(dx * dx + dy * dy);
+        if (distSquared <= m_minAgentCenterDistanceSquared) {
+          constraints.vertexConstraints.emplace(
+              VertexConstraint(time, otherState.x + dx, otherState.y + dy));
+        }
+      }
+    }
+  }
+
+  void addEdgeConstraintsAround(int time, const State &otherStart,
+                                const State &otherEnd,
+                                Constraints &constraints) const {
+    if (m_minAgentCenterDistance <= 0.0) {
+      constraints.edgeConstraints.emplace(EdgeConstraint(
+          time, otherStart.x, otherStart.y, otherEnd.x, otherEnd.y));
+      return;
+    }
+
+    const int radius =
+        static_cast<int>(std::ceil(m_minAgentCenterDistance)) + 1;
+    const int minX = std::min(otherStart.x, otherEnd.x) - radius;
+    const int maxX = std::max(otherStart.x, otherEnd.x) + radius;
+    const int minY = std::min(otherStart.y, otherEnd.y) - radius;
+    const int maxY = std::max(otherStart.y, otherEnd.y) + radius;
+    const std::array<std::pair<int, int>, 5> motionDeltas = {
+        std::make_pair(0, 0), std::make_pair(-1, 0), std::make_pair(1, 0),
+        std::make_pair(0, 1), std::make_pair(0, -1)};
+
+    for (int x = minX; x <= maxX; ++x) {
+      for (int y = minY; y <= maxY; ++y) {
+        for (const auto &delta : motionDeltas) {
+          const int nextX = x + delta.first;
+          const int nextY = y + delta.second;
+          if (segmentDistanceSquared(
+                  static_cast<double>(x), static_cast<double>(y),
+                  static_cast<double>(nextX), static_cast<double>(nextY),
+                  static_cast<double>(otherStart.x),
+                  static_cast<double>(otherStart.y),
+                  static_cast<double>(otherEnd.x),
+                  static_cast<double>(otherEnd.y)) <=
+              m_minAgentCenterDistanceSquared) {
+            constraints.edgeConstraints.emplace(
+                EdgeConstraint(time, x, y, nextX, nextY));
+          }
+        }
+      }
+    }
+  }
+
+  double segmentDistanceSquared(double ax, double ay, double bx, double by,
+                                double cx, double cy, double dx,
+                                double dy) const {
+    const double rvx = bx - ax;
+    const double rvy = by - ay;
+    const double svx = dx - cx;
+    const double svy = dy - cy;
+    const double qx = ax - cx;
+    const double qy = ay - cy;
+    const double dvx = rvx - svx;
+    const double dvy = rvy - svy;
+    const double a = dvx * dvx + dvy * dvy;
+
+    double t = 0.0;
+    if (a > 1e-9) {
+      t = -(qx * dvx + qy * dvy) / a;
+      t = std::clamp(t, 0.0, 1.0);
+    }
+
+    const double diffX = qx + dvx * t;
+    const double diffY = qy + dvy * t;
+    return diffX * diffX + diffY * diffY;
+  }
+
   State getState(size_t agentIdx,
                  const std::vector<PlanResult<State, Action, int>> &solution,
                  size_t t) {
@@ -516,6 +648,8 @@ private:
   int m_highLevelExpanded;
   int m_lowLevelExpanded;
   bool m_disappearAtGoal;
+  double m_minAgentCenterDistance;
+  double m_minAgentCenterDistanceSquared;
 };
 
 #endif

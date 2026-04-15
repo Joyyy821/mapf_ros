@@ -66,6 +66,9 @@ void ECBSROS::initialize(
 
     costmap_ = costmap_ros->getCostmap();
     global_frame_ = costmap_ros->getGlobalFrameID();
+    node_->declare_parameter("min_agent_center_distance_m", 0.0);
+    node_->get_parameter("min_agent_center_distance_m",
+                         min_agent_center_distance_m_);
     int obstacle_cost_threshold_param = 1;
     node_->declare_parameter("static_obstacle_cost_threshold", 1);
     node_->get_parameter("static_obstacle_cost_threshold",
@@ -78,9 +81,14 @@ void ECBSROS::initialize(
     }
     obstacle_cost_threshold_ =
         static_cast<unsigned int>(obstacle_cost_threshold_param);
+    const double resolution = std::max(costmap_->getResolution(), 1e-6);
     RCLCPP_INFO(logger_,
                 "Using static obstacle cost threshold >= %u for planner obstacles.",
                 obstacle_cost_threshold_);
+    RCLCPP_INFO(logger_,
+                "Using inter-agent clearance %.3f m (%.2f cells at %.3f m/cell).",
+                min_agent_center_distance_m_,
+                min_agent_center_distance_m_ / resolution, resolution);
 
     update_obstacle_thread_ =
         new boost::thread(boost::bind(&ECBSROS::updateObstacleThread, this));
@@ -204,7 +212,11 @@ bool ECBSROS::makePlan(const nav_msgs::msg::Path &start,
   int dimx = costmap_->getSizeInCellsX(), dimy = costmap_->getSizeInCellsY();
 
   std::vector<PlanResult<State, Action, int>> solution;
-  Environment mapf(dimx, dimy, obstacles_, goals, false);
+  const double minAgentCenterDistanceCells =
+      min_agent_center_distance_m_ /
+      std::max(costmap_->getResolution(), 1e-6);
+  Environment mapf(dimx, dimy, obstacles_, goals, false,
+                   minAgentCenterDistanceCells);
   ECBS<State, Action, int, Conflict, Constraints, Environment> ecbs(
       mapf, suboptimality_);
 
