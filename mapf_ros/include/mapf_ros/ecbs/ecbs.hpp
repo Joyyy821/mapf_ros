@@ -228,6 +228,10 @@ public:
       }
 #endif
 
+      if (focal.empty()) {
+        return false;
+      }
+
       auto h = focal.top();
       HighLevelNode P = *h;
       m_env.onExpandHighLevelNode(P.cost);

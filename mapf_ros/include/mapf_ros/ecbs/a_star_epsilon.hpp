@@ -196,6 +196,10 @@ public:
       }
 #endif
 
+      if (focalSet.empty()) {
+        return false;
+      }
+
       auto currentHandle = focalSet.top();
       Node current = *currentHandle;
       m_env.onExpandNode(current.state, current.fScore, current.gScore);

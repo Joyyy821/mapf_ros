@@ -63,11 +63,15 @@ void CBSROS::initialize(
 
     costmap_ = costmap_ros->getCostmap();
     global_frame_ = costmap_ros->getGlobalFrameID();
-    node_->declare_parameter("min_agent_center_distance_m", 0.0);
+    if (!node_->has_parameter("min_agent_center_distance_m")) {
+      node_->declare_parameter("min_agent_center_distance_m", 0.0);
+    }
     node_->get_parameter("min_agent_center_distance_m",
                          min_agent_center_distance_m_);
     int obstacle_cost_threshold_param = 1;
-    node_->declare_parameter("static_obstacle_cost_threshold", 1);
+    if (!node_->has_parameter("static_obstacle_cost_threshold")) {
+      node_->declare_parameter("static_obstacle_cost_threshold", 1);
+    }
     node_->get_parameter("static_obstacle_cost_threshold",
                          obstacle_cost_threshold_param);
     if (obstacle_cost_threshold_param < 0) {
@@ -137,6 +141,8 @@ bool CBSROS::makePlan(const nav_msgs::msg::Path &start,
                       const nav_msgs::msg::Path &goal,
                       mapf_msgs::msg::GlobalPlan &plan, double &cost,
                       const double &time_tolerance) {
+  last_status_ = PlannerStatus::FAILURE;
+
   // until tf can handle transforming things that are way in the past... we'll
   // require the goal to be in our global frame
   if (goal.header.frame_id != global_frame_) {
@@ -230,12 +236,14 @@ bool CBSROS::makePlan(const nav_msgs::msg::Path &start,
   // check time tolerance
   timer.stop();
   if (timer.elapsedSeconds() > time_tolerance) {
+    last_status_ = PlannerStatus::TIMEOUT;
     RCLCPP_ERROR(logger_, "Planning time out! Cur time tolerance is %lf",
                  time_tolerance);
     return false;
   }
 
   if (success) {
+    last_status_ = PlannerStatus::SUCCESS;
     cost = 0;
     generatePlan(solution, goal, plan, cost);
 
@@ -342,9 +350,12 @@ bool CBSROS::checkSurroundObstacle(const unsigned int &mx,
 }
 
 CBSROS::~CBSROS() {
-  update_obstacle_thread_->interrupt();
-  update_obstacle_thread_->join();
-  delete update_obstacle_thread_;
+  if (update_obstacle_thread_ != nullptr) {
+    update_obstacle_thread_->interrupt();
+    update_obstacle_thread_->join();
+    delete update_obstacle_thread_;
+    update_obstacle_thread_ = nullptr;
+  }
 
   costmap_ = nullptr;
 

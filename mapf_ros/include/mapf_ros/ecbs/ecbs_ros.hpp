@@ -59,6 +59,8 @@ public:
                 mapf_msgs::msg::GlobalPlan &plan, double &cost,
                 const double &time_tolerance) override;
 
+  PlannerStatus getLastStatus() const override { return last_status_; }
+
   // Update global obstacle thread
   void updateObstacleThread();
 
@@ -86,7 +88,7 @@ protected:
   std::string global_frame_;
 
   // Update global obstacle thread
-  boost::thread *update_obstacle_thread_;
+  boost::thread *update_obstacle_thread_{nullptr};
 
   // mapf env
   std::unordered_set<Location> obstacles_;
@@ -96,6 +98,7 @@ protected:
   bool initialized_;
 
   double suboptimality_;
+  PlannerStatus last_status_{PlannerStatus::UNKNOWN};
 
   // clock
   rclcpp::Clock::SharedPtr clock_;

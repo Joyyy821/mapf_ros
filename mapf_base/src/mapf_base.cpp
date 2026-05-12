@@ -29,6 +29,11 @@
 #include "mapf_base/mapf_base.hpp"
 
 namespace mapf {
+namespace {
+constexpr const char *kCbsPlannerName = "mapf_planner/CBSROS";
+constexpr const char *kEcbsPlannerName = "mapf_planner/ECBSROS";
+} // namespace
+
 MAPFBase::MAPFBase(const rclcpp::NodeOptions &options)
     : nav2_util::LifecycleNode("mapf_base_node", "", options),
       mapf_loader_("mapf_ros", "mapf::MAPFROS"), receive_mapf_goal_(false), run_mapf_(false) {
@@ -44,15 +49,35 @@ MAPFBase::MAPFBase(const rclcpp::NodeOptions &options)
 }
 
 MAPFBase::~MAPFBase() {
+  stopMapfThreads();
+  resetPlannerPlugins();
   costmap_thread_.reset();
+}
 
-  // delete the thread
-  do_mapf_thread_->interrupt();
-  do_mapf_thread_->join();
-  delete do_mapf_thread_;
-  state_machine_thread_->interrupt();
-  state_machine_thread_->join();
-  delete state_machine_thread_;
+void MAPFBase::stopMapfThreads() {
+  {
+    std::lock_guard<std::mutex> lock(mtx_planner_);
+    run_mapf_ = false;
+  }
+
+  if (do_mapf_thread_ != nullptr) {
+    do_mapf_thread_->interrupt();
+    do_mapf_thread_->join();
+    delete do_mapf_thread_;
+    do_mapf_thread_ = nullptr;
+  }
+
+  if (state_machine_thread_ != nullptr) {
+    state_machine_thread_->interrupt();
+    state_machine_thread_->join();
+    delete state_machine_thread_;
+    state_machine_thread_ = nullptr;
+  }
+}
+
+void MAPFBase::resetPlannerPlugins() {
+  ecbs_fallback_planner_.reset();
+  mapf_planner_.reset();
 }
 
 nav2_util::CallbackReturn MAPFBase::on_configure(const rclcpp_lifecycle::State & /*state*/) {
@@ -97,25 +122,42 @@ nav2_util::CallbackReturn MAPFBase::on_activate(const rclcpp_lifecycle::State & 
     pub_gui_plan_[i]->on_activate();
   }
   pub_mapf_global_plan_->on_activate();
+  publishers_active_.store(true);
 
   costmap_ros_->activate();
 
-  do_mapf_thread_ = new boost::thread(boost::bind(&MAPFBase::doMAPFThread, this));
-  state_machine_thread_ = new boost::thread(boost::bind(&MAPFBase::stateMachine, this));
-
   // create a local planner
   try {
+    resetPlannerPlugins();
     mapf_planner_ = mapf_loader_.createUniqueInstance(planner_name_);
     RCLCPP_INFO(this->get_logger(), "Created local_planner %s", planner_name_.c_str());
     mapf_planner_->initialize(mapf_loader_.getName(planner_name_), costmap_ros_,
                               shared_from_this());
+    if (planner_name_ == kCbsPlannerName) {
+      ecbs_fallback_planner_ = mapf_loader_.createUniqueInstance(kEcbsPlannerName);
+      RCLCPP_INFO(this->get_logger(), "Created fallback_planner %s", kEcbsPlannerName);
+      ecbs_fallback_planner_->initialize(mapf_loader_.getName(kEcbsPlannerName),
+                                         costmap_ros_, shared_from_this());
+    }
   } catch (const pluginlib::PluginlibException &ex) {
+    publishers_active_.store(false);
+    resetPlannerPlugins();
     RCLCPP_FATAL(this->get_logger(),
                  "Failed to create the %s planner, are you sure it is properly "
                  "registered and that the containing library is built? Exception: %s",
                  planner_name_.c_str(), ex.what());
     return nav2_util::CallbackReturn::FAILURE;
+  } catch (const std::exception &ex) {
+    publishers_active_.store(false);
+    resetPlannerPlugins();
+    RCLCPP_FATAL(this->get_logger(),
+                 "Failed to initialize MAPF planner stack for %s: %s",
+                 planner_name_.c_str(), ex.what());
+    return nav2_util::CallbackReturn::FAILURE;
   }
+
+  do_mapf_thread_ = new boost::thread(boost::bind(&MAPFBase::doMAPFThread, this));
+  state_machine_thread_ = new boost::thread(boost::bind(&MAPFBase::stateMachine, this));
 
   createBond();
   return nav2_util::CallbackReturn::SUCCESS;
@@ -124,10 +166,18 @@ nav2_util::CallbackReturn MAPFBase::on_activate(const rclcpp_lifecycle::State & 
 nav2_util::CallbackReturn MAPFBase::on_deactivate(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_INFO(get_logger(), "Deactivating");
 
+  publishers_active_.store(false);
+  stopMapfThreads();
+  resetPlannerPlugins();
+
   for (int i = 0; i < agent_num_; ++i) {
-    pub_gui_plan_[i]->on_deactivate();
+    if (pub_gui_plan_[i]) {
+      pub_gui_plan_[i]->on_deactivate();
+    }
   }
-  pub_mapf_global_plan_->on_deactivate();
+  if (pub_mapf_global_plan_) {
+    pub_mapf_global_plan_->on_deactivate();
+  }
 
   costmap_ros_->deactivate();
 
@@ -140,8 +190,11 @@ nav2_util::CallbackReturn MAPFBase::on_deactivate(const rclcpp_lifecycle::State 
 nav2_util::CallbackReturn MAPFBase::on_cleanup(const rclcpp_lifecycle::State & /*state*/) {
   RCLCPP_INFO(get_logger(), "Cleaning up");
 
+  publishers_active_.store(false);
+  stopMapfThreads();
+
   // delete the planner
-  mapf_planner_.reset();
+  resetPlannerPlugins();
 
   for (int i = 0; i < agent_num_; ++i) {
     pub_gui_plan_[i].reset();
@@ -157,6 +210,9 @@ nav2_util::CallbackReturn MAPFBase::on_cleanup(const rclcpp_lifecycle::State & /
 
 nav2_util::CallbackReturn MAPFBase::on_shutdown(const rclcpp_lifecycle::State &) {
   RCLCPP_INFO(get_logger(), "Shutting down");
+  publishers_active_.store(false);
+  stopMapfThreads();
+  resetPlannerPlugins();
   return nav2_util::CallbackReturn::SUCCESS;
 }
 
@@ -279,7 +335,7 @@ void MAPFBase::doMAPFThread() {
       std::unique_lock<std::mutex> lock_planner(mtx_planner_);
       bool run_mapf = run_mapf_;
       lock_planner.unlock();
-      if (run_mapf) {
+      if (run_mapf && mapf_planner_) {
         nav_msgs::msg::Path start_ros = getRobotPose();
         nav_msgs::msg::Path goal_snapshot;
         {
@@ -288,8 +344,43 @@ void MAPFBase::doMAPFThread() {
         }
         double cost = 0;
         mapf_msgs::msg::GlobalPlan plan;
-        if (mapf_planner_->makePlan(
-                start_ros, goal_snapshot, plan, cost, planner_time_tolerance_)) {
+        bool planning_success = mapf_planner_->makePlan(
+            start_ros, goal_snapshot, plan, cost, planner_time_tolerance_);
+
+        if (!planning_success && planner_name_ == kCbsPlannerName &&
+            mapf_planner_->getLastStatus() == PlannerStatus::TIMEOUT) {
+          RCLCPP_WARN(
+              this->get_logger(),
+              "CBS planner timed out after %.3f seconds. Retrying once with ECBS.",
+              planner_time_tolerance_);
+          if (!ecbs_fallback_planner_) {
+            RCLCPP_ERROR(this->get_logger(),
+                         "ECBS fallback planner was not initialized.");
+          } else {
+            cost = 0;
+            plan = mapf_msgs::msg::GlobalPlan();
+            try {
+              planning_success = ecbs_fallback_planner_->makePlan(
+                  start_ros, goal_snapshot, plan, cost, planner_time_tolerance_);
+              if (planning_success) {
+                RCLCPP_INFO(this->get_logger(), "ECBS fallback planning successful.");
+              } else {
+                RCLCPP_ERROR(this->get_logger(), "ECBS fallback planning failed.");
+              }
+            } catch (const std::exception &ex) {
+              planning_success = false;
+              RCLCPP_ERROR(this->get_logger(),
+                           "ECBS fallback planning threw an exception: %s",
+                           ex.what());
+            } catch (...) {
+              planning_success = false;
+              RCLCPP_ERROR(this->get_logger(),
+                           "ECBS fallback planning threw an unknown exception.");
+            }
+          }
+        }
+
+        if (planning_success) {
           publishPlan(plan);
           if (!continuous_planning_) {
             std::unique_lock<std::mutex> lock_planner(mtx_planner_);
@@ -306,8 +397,15 @@ void MAPFBase::doMAPFThread() {
 }
 
 void MAPFBase::publishPlan(const mapf_msgs::msg::GlobalPlan &plan) {
+  if (!publishers_active_.load() || !pub_mapf_global_plan_) {
+    RCLCPP_WARN(this->get_logger(),
+                "Skipping MAPF plan publish because mapf_base_node is not active.");
+    return;
+  }
   for (size_t i = 0; i < plan.global_plan.size(); ++i) {
-    pub_gui_plan_[i]->publish(plan.global_plan[i].plan);
+    if (i < pub_gui_plan_.size() && pub_gui_plan_[i]) {
+      pub_gui_plan_[i]->publish(plan.global_plan[i].plan);
+    }
   }
   pub_mapf_global_plan_->publish(plan);
 }

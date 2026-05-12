@@ -32,11 +32,19 @@
 
 #include "nav2_costmap_2d/costmap_2d_ros.hpp"
 #include "nav2_util/costmap.hpp"
+#include "nav2_util/lifecycle_node.hpp"
 #include "nav_msgs/msg/path.hpp"
 
 #include "mapf_msgs/msg/global_plan.hpp"
 
 namespace mapf {
+
+enum class PlannerStatus {
+  UNKNOWN = 0,
+  SUCCESS,
+  FAILURE,
+  TIMEOUT,
+};
 
 class MAPFROS {
 public:
@@ -47,6 +55,8 @@ public:
   virtual bool makePlan(const nav_msgs::msg::Path &start, const nav_msgs::msg::Path &goal,
                         mapf_msgs::msg::GlobalPlan &plan, double &cost,
                         const double &time_tolerance) = 0;
+
+  virtual PlannerStatus getLastStatus() const { return PlannerStatus::UNKNOWN; }
 
   virtual ~MAPFROS() {}
 

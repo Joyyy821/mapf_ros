@@ -28,6 +28,12 @@
 #ifndef MAPF_BASE_H
 #define MAPF_BASE_H
 
+#include <atomic>
+
+#include <boost/bind/bind.hpp>
+#include <boost/shared_ptr.hpp>
+#include <boost/thread.hpp>
+
 #include "rclcpp/rclcpp.hpp"
 
 #include "nav2_costmap_2d/costmap_2d.hpp"
@@ -44,7 +50,7 @@
 #include "mapf_msgs/msg/goal.hpp"
 #include "mapf_msgs/msg/single_plan.hpp"
 
-#include "mapf_ros/cbs/cbs_ros.hpp"
+#include "mapf_ros/mapf_ros.hpp"
 
 namespace mapf {
 class MAPFBase : public nav2_util::LifecycleNode {
@@ -74,6 +80,9 @@ protected:
   nav2_util::CallbackReturn on_cleanup(const rclcpp_lifecycle::State &state) override;
   nav2_util::CallbackReturn on_shutdown(const rclcpp_lifecycle::State &state) override;
 
+  void stopMapfThreads();
+  void resetPlannerPlugins();
+
   std::mutex mtx_mapf_goal_;
   std::mutex mtx_planner_;
 
@@ -95,14 +104,17 @@ protected:
   bool receive_mapf_goal_;
   bool run_mapf_;
 
-  boost::thread *do_mapf_thread_;
-  boost::thread *state_machine_thread_;
+  std::atomic_bool publishers_active_{false};
+
+  boost::thread *do_mapf_thread_{nullptr};
+  boost::thread *state_machine_thread_{nullptr};
 
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   std::unique_ptr<nav2_util::NodeThread> costmap_thread_;
 
   pluginlib::ClassLoader<mapf::MAPFROS> mapf_loader_;
   boost::shared_ptr<mapf::MAPFROS> mapf_planner_;
+  boost::shared_ptr<mapf::MAPFROS> ecbs_fallback_planner_;
 
   std::shared_ptr<tf2_ros::TransformListener> tf_{nullptr};
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
